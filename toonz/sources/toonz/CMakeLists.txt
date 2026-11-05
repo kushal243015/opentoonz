@@ -107,6 +107,7 @@ set(MOC_HEADERS
     svnupdateandlockdialog.h
     svnupdatedialog.h
     tapp.h
+    commandbridge.h
     tasksviewer.h
     testpanel.h
     timestretchpopup.h
@@ -239,6 +240,7 @@ set(SOURCES
     ruler.cpp
     scanlist.cpp
     tapp.cpp
+    commandbridge.cpp
     toolbar.cpp
     batchserversviewer.cpp
     castviewer.cpp

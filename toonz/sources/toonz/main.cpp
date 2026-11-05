@@ -5,6 +5,7 @@
 #include "mainwindow.h"
 #include "flipbook.h"
 #include "tapp.h"
+#include "commandbridge.h"  // [otz-bridge]
 #include "iocommand.h"
 #include "previewfxmanager.h"
 #include "cleanupsettingspopup.h"
@@ -803,6 +804,8 @@ int main(int argc, char *argv[]) {
 
   // Show floating panels only after the main window has been shown
   w.startupFloatingPanels();
+
+  CommandBridge::startIfEnabled();  // [otz-bridge]
 
   const QByteArray defaultStartupTool =
       Preferences::instance()->getDefaultStartupTool().toLatin1();
