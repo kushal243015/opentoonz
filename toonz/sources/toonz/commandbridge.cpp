@@ -22,6 +22,9 @@
 #include "toonz/levelset.h"
 #include "toonz/txshlevel.h"
 #include "toonz/txshcell.h"
+#include "toonz/txshcolumn.h"
+#include "toonz/txshsimplelevel.h"
+#include "toonz/txshsoundlevel.h"
 #include "toonz/fxcommand.h"
 #include "toutputproperties.h"
 
@@ -50,7 +53,7 @@
 
 namespace {
 
-const char *kBridgeVersion = "otz-bridge 0.1";
+const char *kBridgeVersion = "otz-bridge 0.2";
 
 struct BridgeError : std::runtime_error {
   using std::runtime_error::runtime_error;
@@ -344,15 +347,35 @@ QJsonValue CommandBridge::levelLoad(const QJsonObject &p) {
   if (args.col0 < 0 || args.row0 < 0) fail("col/row are 1-based");
   const int n = IoCmd::loadResources(args, false);
   if (n <= 0) fail("nothing was loaded (check the path)");
-  QJsonArray names;
-  for (TXshLevel *l : args.loadedLevels)
-    names.append(QString::fromStdWString(l->getName()));
+  QJsonArray names, details;
+  for (TXshLevel *l : args.loadedLevels) {
+    const QString nm = QString::fromStdWString(l->getName());
+    names.append(nm);
+    QJsonObject d;
+    d["name"] = nm;
+    if (TXshSimpleLevel *sl = l->getSimpleLevel()) {
+      // Frame ids to use in cells.set. A single image file (ball.png) has the
+      // special id -2 (TFrameId::NO_FRAME); numbered sequences start at 1.
+      QJsonArray fids;
+      for (const TFrameId &f : sl->getFids()) fids.append(f.getNumber());
+      d["type"] = "image";
+      d["fids"] = fids;
+    } else if (TXshSoundLevel *snd = l->getSoundLevel()) {
+      d["type"]   = "sound";
+      d["frames"] = snd->getFrameCount();
+    } else
+      d["type"] = "other";
+    details.append(d);
+  }
   QJsonObject r;
-  r["levels"] = names;
-  r["col0"]   = args.col0 + 1;
-  r["col1"]   = args.col1 + 1;
-  r["row0"]   = args.row0 + 1;
-  r["row1"]   = args.row1 + 1;
+  r["levels"]  = names;
+  r["details"] = details;
+  r["col"]     = args.col0 + 1;
+  if (args.expose) {
+    r["col_last"] = args.col1 + 1;
+    r["row_first"] = args.row0 + 1;
+    r["row_last"]  = args.row1 + 1;
+  }
   notifyChanged();
   return r;
 }
@@ -374,7 +397,21 @@ QJsonValue CommandBridge::cellsSet(const QJsonObject &p) {
       continue;
     }
     if (!v.isDouble()) fail("fids must be integers or null");
-    xsh->setCell(row0 + i, col, TXshCell(lvl, TFrameId(v.toInt())));
+    const TFrameId fid(v.toInt());
+    if (TXshSimpleLevel *sl = lvl->getSimpleLevel()) {
+      if (!sl->isFid(fid)) {
+        QStringList valid;
+        for (const TFrameId &f : sl->getFids()) {
+          valid << QString::number(f.getNumber());
+          if (valid.size() >= 10) { valid << "..."; break; }
+        }
+        fail(QString("frame id %1 does not exist in level '%2' (valid: %3)")
+                 .arg(v.toInt())
+                 .arg(QString::fromStdWString(lvl->getName()))
+                 .arg(valid.join(", ")));
+      }
+    }
+    xsh->setCell(row0 + i, col, TXshCell(lvl, fid));
     ++written;
   }
   notifyChanged();
@@ -437,7 +474,7 @@ QJsonValue CommandBridge::keyClear(const QJsonObject &p) {
   return QJsonObject{{"keyframes", 0}};
 }
 
-// params: {type:"STD_blurFx", col (1-based), row (default 1),
+// params: {type:"STD_blurFx", col (1-based), row (default 1), mode:"insert"|"add",
 //          params: {"value": 10, "other": [[frame1, v1], [frame2, v2]]}}
 // Numeric parameters only. Number = constant; list = keyframes (1-based frames).
 QJsonValue CommandBridge::fxAdd(const QJsonObject &p) {
@@ -463,7 +500,19 @@ QJsonValue CommandBridge::fxAdd(const QJsonObject &p) {
       fail("fx parameter value must be a number or [[frame,value],...]");
   }
   const int col = reqInt(p, "col") - 1, row = p.value("row").toInt(1) - 1;
-  TFxCommand::addFx(fx, QList<TFxP>(), app(), col, row);
+  TXshColumn *column = xsheet()->getColumn(col);
+  if (!column || column->isEmpty() || !column->getFx())
+    fail(QString("column %1 is empty or has no fx node").arg(col + 1));
+  // Without an explicit input, OpenToonz attaches a new fx to whatever fx is
+  // selected in the GUI, or leaves it unconnected (v0.1 bug). Pass the column.
+  const QList<TFxP> inputs{TFxP(column->getFx())};
+  const QString mode = p.value("mode").toString("insert");
+  if (mode == "insert")  // column -> fx -> (column's previous output)
+    TFxCommand::insertFx(fx, inputs, QList<TFxCommand::Link>(), app(), col, row);
+  else if (mode == "add")  // new branch fed by the column
+    TFxCommand::addFx(fx, inputs, app(), col, row);
+  else
+    fail("mode must be insert | add");
   notifyChanged();
   QJsonObject r;
   r["fx_id"] = QString::fromStdWString(fx->getFxId());
